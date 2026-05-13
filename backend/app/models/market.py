@@ -1,7 +1,8 @@
 """Market data SQLAlchemy models."""
 from datetime import datetime, date
 from sqlalchemy import (
-    Column, Integer, String, Float, Date, DateTime, UniqueConstraint, Index
+    Column, ForeignKey, Integer, String, Float, Date, DateTime,
+    UniqueConstraint, Index
 )
 from sqlalchemy.orm import relationship
 from app.database import Base
@@ -30,7 +31,7 @@ class PriceData(Base):
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    asset_id = Column(Integer, nullable=False)
+    asset_id = Column(Integer, ForeignKey("assets.id"), nullable=False)
     date = Column(Date, nullable=False)
     open = Column(Float)
     high = Column(Float)
