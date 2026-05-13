@@ -3,6 +3,7 @@ from datetime import datetime, date
 from sqlalchemy import (
     Column, Integer, String, Float, Date, DateTime, Text, JSON, ForeignKey, Index
 )
+from sqlalchemy.orm import relationship
 from app.database import Base
 
 
