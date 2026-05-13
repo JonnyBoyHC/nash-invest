@@ -1,0 +1,27 @@
+# Core
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.3
+pydantic-settings==2.7.0
+
+# Database
+sqlalchemy==2.0.36
+aiosqlite==0.20.0
+
+# Data
+yfinance==0.2.51
+pandas==2.2.3
+numpy==2.2.1
+
+# Modeling
+pymc==5.19.1
+arviz==0.20.0
+scikit-learn==1.6.0
+scipy==1.14.1
+
+# Plotting (server-side)
+plotly==5.24.1
+
+# Utilities
+httpx==0.28.1
+python-dotenv==1.0.1
