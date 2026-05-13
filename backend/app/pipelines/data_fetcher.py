@@ -1,5 +1,6 @@
 """Fetch market data via yfinance and store locally."""
 import logging
+import time
 from datetime import date, datetime, timedelta
 from typing import Optional
 
@@ -13,17 +14,28 @@ from app.models.market import Asset, PriceData
 
 logger = logging.getLogger(__name__)
 
+# Seconds to pause between API calls to avoid Yahoo 429 rate limits
+RATE_LIMIT_DELAY = 2.0
+
 
 def ensure_asset(db: Session, ticker: str) -> Asset:
-    """Get or create an Asset row."""
+    """Get or create an Asset row. Falls back to ticker name if info fetch fails."""
     asset = db.query(Asset).filter(Asset.ticker == ticker.upper()).first()
     if not asset:
-        info = yf.Ticker(ticker).info
+        name = ticker
+        asset_type = "equity"
+        currency = "USD"
+        try:
+            info = yf.Ticker(ticker).info
+            name = info.get("shortName") or info.get("longName") or ticker
+            currency = info.get("currency", "USD")
+        except Exception:
+            logger.warning(f"Could not fetch info for {ticker}, using ticker as name")
         asset = Asset(
             ticker=ticker.upper(),
-            name=info.get("shortName") or info.get("longName") or ticker,
-            asset_type="equity",
-            currency=info.get("currency", "USD"),
+            name=name,
+            asset_type=asset_type,
+            currency=currency,
         )
         db.add(asset)
         db.flush()
@@ -35,30 +47,43 @@ def fetch_price_history(
     start: Optional[date] = None,
     end: Optional[date] = None,
     period: str = "1y",
+    retries: int = 3,
 ) -> pd.DataFrame:
-    """Download price history from Yahoo Finance."""
+    """Download price history from Yahoo Finance with retry on rate limit."""
     if end is None:
         end = date.today()
     if start is None:
         start = end - timedelta(days=365)
 
-    df = yf.download(
-        ticker,
-        start=start.isoformat(),
-        end=(end + timedelta(days=1)).isoformat(),
-        progress=False,
-        auto_adjust=True,
-    )
+    for attempt in range(retries):
+        try:
+            df = yf.download(
+                ticker,
+                start=start.isoformat(),
+                end=(end + timedelta(days=1)).isoformat(),
+                progress=False,
+                auto_adjust=True,
+            )
 
-    if df.empty:
-        return pd.DataFrame()
+            if df.empty:
+                return pd.DataFrame()
 
-    df = df.reset_index()
-    df.columns = [c.lower().replace(" ", "_") for c in df.columns]
-    # Normalize MultiIndex columns from yfinance
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-    return df
+            df = df.reset_index()
+            df.columns = [c.lower().replace(" ", "_") for c in df.columns]
+            # Normalize MultiIndex columns from yfinance
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+            return df
+
+        except Exception as e:
+            if "429" in str(e) and attempt < retries - 1:
+                wait = (attempt + 1) * RATE_LIMIT_DELAY
+                logger.warning(f"Rate limited on {ticker}, retrying in {wait}s (attempt {attempt+1}/{retries})")
+                time.sleep(wait)
+            else:
+                raise
+
+    return pd.DataFrame()
 
 
 def sync_prices(
@@ -122,17 +147,23 @@ def sync_watchlist(
     tickers: list[str],
     start: Optional[date] = None,
 ) -> dict[str, int]:
-    """Sync prices for every ticker in the watchlist. Returns {ticker: rows}."""
+    """Sync prices for every ticker in the watchlist. Returns {ticker: rows}.
+
+    Adds a pause between tickers to avoid Yahoo Finance rate limiting (429)."""
     db = SessionLocal()
     try:
         results = {}
-        for ticker in tickers:
+        for i, ticker in enumerate(tickers):
+            t = ticker.strip().upper()
             try:
-                n = sync_prices(ticker.strip().upper(), start=start, db=db)
+                n = sync_prices(t, start=start, db=db)
                 results[ticker] = n
             except Exception as e:
-                logger.error(f"Failed to sync {ticker}: {e}")
+                logger.error(f"Failed to sync {t}: {e}")
                 results[ticker] = -1
+            # Pause between tickers to avoid 429 — skip after the last one
+            if i < len(tickers) - 1:
+                time.sleep(RATE_LIMIT_DELAY)
         return results
     finally:
         db.close()
