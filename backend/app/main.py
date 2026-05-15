@@ -4,11 +4,13 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 
 from app.config import settings
 from app.database import init_db
 from app.pipelines.data_fetcher import sync_watchlist
-from app.routers import market, predictions
+from app.routers import market, predictions, risk
 
 logging.basicConfig(
     level=logging.INFO,
@@ -50,6 +52,32 @@ app.add_middleware(
 
 app.include_router(market.router)
 app.include_router(predictions.router)
+app.include_router(risk.router)
+
+# Static dashboard
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+
+@app.get("/dashboard")
+def dashboard():
+    """Serve the HTML5 dashboard."""
+    return FileResponse("static/dashboard.html")
+
+
+@app.get("/")
+def root():
+    """Landing when opening the server in a browser — API has no HTML homepage."""
+    return {
+        "service": "nash-invest",
+        "message": "API is running. Use the paths below or open /docs for Swagger UI.",
+        "docs": "/docs",
+        "redoc": "/redoc",
+        "health": "/api/health",
+        "dashboard": "/dashboard",
+        "market": "/api/market",
+        "predictions": "/api/predictions",
+        "risk": "/api/risk",
+    }
 
 
 @app.get("/api/health")

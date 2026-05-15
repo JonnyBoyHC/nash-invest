@@ -89,21 +89,30 @@ def fetch_bulk_prices(
             for t in tickers:
                 t_upper = t.upper()
                 try:
-                    if len(tickers) == 1:
-                        ticker_df = df.copy()
-                    elif "Close" in df.columns.levels[0] if isinstance(df.columns, pd.MultiIndex) else False:
-                        ticker_df = df.xs(t_upper, axis=1, level=0)
+                    if isinstance(df.columns, pd.MultiIndex):
+                        # yfinance returns MultiIndex: (field, ticker) or (Price, ticker)
+                        # Try level=1 (ticker) first (yfinance >=1.x multi-ticker format)
+                        try:
+                            ticker_df = df.xs(t_upper, axis=1, level=1)
+                        except KeyError:
+                            # Fall back to level=0 (old yfinance or single-ticker format)
+                            ticker_df = df.xs(t_upper, axis=1, level=0)
                     else:
-                        # Single ticker result
                         ticker_df = df.copy()
                 except KeyError:
                     logger.warning(f"No price data in bulk result for {t_upper}")
                     continue
 
                 ticker_df = ticker_df.reset_index()
-                ticker_df.columns = [c.lower().replace(" ", "_") for c in ticker_df.columns]
+                # Flatten MultiIndex columns, lowercase, replace spaces
                 if isinstance(ticker_df.columns, pd.MultiIndex):
-                    ticker_df.columns = ticker_df.columns.get_level_values(0)
+                    ticker_df.columns = [
+                        str(c[0]).lower().replace(" ", "_") for c in ticker_df.columns
+                    ]
+                else:
+                    ticker_df.columns = [
+                        str(c).lower().replace(" ", "_") for c in ticker_df.columns
+                    ]
                 result[t_upper] = ticker_df
 
             return result

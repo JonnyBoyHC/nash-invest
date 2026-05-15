@@ -1,0 +1,481 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nash Invest — Dashboard</title>
+<script src="https://cdn.plot.ly/plotly-3.0.1.min.js"></script>
+<style>
+  :root {
+    --bg: #0d1117;
+    --card: #161b22;
+    --border: #30363d;
+    --text: #c9d1d9;
+    --muted: #8b949e;
+    --green: #3fb950;
+    --red: #f85149;
+    --blue: #58a6ff;
+    --gold: #d2991d;
+    --purple: #a371f7;
+  }
+  * { box-sizing:border-box; margin:0; padding:0 }
+  body {
+    background:var(--bg); color:var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+    line-height:1.5; min-height:100vh;
+  }
+  header {
+    border-bottom:1px solid var(--border);
+    padding:16px 24px;
+    display:flex; align-items:center; justify-content:space-between;
+    position:sticky; top:0; background:var(--bg); z-index:10;
+  }
+  header h1 { font-size:1.25rem; font-weight:600 }
+  header .badge { font-size:0.75rem; color:var(--muted) }
+  .grid { display:grid; gap:20px; padding:20px 24px }
+  .grid-4 { grid-template-columns:repeat(auto-fit,minmax(170px,1fr)) }
+  .grid-2 { grid-template-columns:repeat(auto-fit,minmax(420px,1fr)) }
+  .card {
+    background:var(--card); border:1px solid var(--border);
+    border-radius:8px; padding:16px;
+  }
+  .card h2 { font-size:0.85rem; color:var(--muted); font-weight:500; margin-bottom:12px; text-transform:uppercase; letter-spacing:0.05em }
+  .ticker-card { cursor:pointer; transition:border-color .15s }
+  .ticker-card:hover { border-color:var(--blue) }
+  .ticker-card .symbol { font-size:1.1rem; font-weight:700 }
+  .ticker-card .price { font-size:1.5rem; font-weight:700; margin:4px 0 }
+  .ticker-card .change { font-size:0.85rem }
+  .up { color:var(--green) } .down { color:var(--red) } .flat { color:var(--muted) }
+  .metric-row { display:flex; justify-content:space-between; padding:6px 0; border-bottom:1px solid var(--border); font-size:0.88rem }
+  .metric-row:last-child { border-bottom:0 }
+  .metric-label { color:var(--muted) }
+  .metric-value { font-weight:600; font-variant-numeric:tabular-nums }
+  table { width:100%; border-collapse:collapse; font-size:0.85rem }
+  th, td { text-align:right; padding:6px 10px }
+  th { color:var(--muted); font-weight:500; border-bottom:2px solid var(--border); text-transform:uppercase; font-size:0.75rem }
+  td { border-bottom:1px solid var(--border) }
+  td:first-child, th:first-child { text-align:left }
+  .status-ok { color:var(--green) }
+  .status-warn { color:var(--gold) }
+  .status-bad { color:var(--red) }
+  .flex-row { display:flex; gap:12px; align-items:center }
+  button {
+    background:var(--card); color:var(--blue); border:1px solid var(--border);
+    border-radius:6px; padding:6px 14px; cursor:pointer; font-size:0.85rem;
+  }
+  button:hover { background:#1c2633 }
+  .loading { color:var(--muted); font-style:italic; padding:24px; text-align:center }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="flex-row">
+    <h1>📈 Nash Invest</h1>
+    <span class="badge">Bayesian MCMC · v0.1.0</span>
+  </div>
+  <div class="flex-row">
+    <span id="status" style="color:var(--muted);font-size:0.85rem">Connecting…</span>
+    <button onclick="loadAll()">⟳ Refresh</button>
+  </div>
+</header>
+
+<div class="grid grid-4" id="watchlist"></div>
+
+<!-- ── Risk Metrics Cards ──────────────────────────────────────── -->
+<div class="grid grid-4" id="risk-cards" style="padding-bottom:0"></div>
+
+<div class="grid grid-2" style="padding-bottom:40px">
+  <div class="card">
+    <h2>📊 1-Year Price History</h2>
+    <div id="chart-price" style="height:380px"></div>
+  </div>
+  <div class="card">
+    <h2>🔮 7-Day Forecast with 90% CI</h2>
+    <div id="chart-forecast" style="height:380px"></div>
+  </div>
+  <div class="card">
+    <h2>📈 Forecast vs Actual</h2>
+    <div id="chart-backtest" style="height:380px"></div>
+  </div>
+  <div class="card">
+    <h2>📋 Model Scorecard</h2>
+    <div id="scorecard"></div>
+  </div>
+  <div class="card">
+    <h2>⚖️ Bias Breakdown</h2>
+    <div id="chart-bias" style="height:380px"></div>
+  </div>
+  <div class="card">
+    <h2>📊 Bias Summary</h2>
+    <div id="bias-summary"></div>
+  </div>
+</div>
+
+<script>
+const API = '/api';
+
+// ─── Fetch helpers ───────────────────────────────────────────────────
+async function fetchJSON(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+  return r.json();
+}
+
+// ─── Watchlist cards ──────────────────────────────────────────────────
+async function loadWatchlist() {
+  const el = document.getElementById('watchlist');
+  try {
+    const data = await fetchJSON(`${API}/market/watchlist`);
+    el.innerHTML = data.map(d => {
+      const cls = (d.change_pct > 0) ? 'up' : (d.change_pct < 0) ? 'down' : 'flat';
+      const arrow = (d.change_pct > 0) ? '▲' : (d.change_pct < 0) ? '▼' : '─';
+      return `<div class="card ticker-card" onclick="selectTicker('${d.ticker}')">
+        <div class="symbol">${d.ticker} <span style="font-weight:400;color:var(--muted);font-size:0.75rem">${d.name||''}</span></div>
+        <div class="price">$${d.price?.toFixed(2)}</div>
+        <div class="change ${cls}">${arrow} ${d.change_pct?.toFixed(2)}%</div>
+      </div>`;
+    }).join('');
+  } catch(e) {
+    el.innerHTML = `<div class="card" style="grid-column:1/-1"><span style="color:var(--red)">Watchlist load failed: ${e.message}</span></div>`;
+  }
+}
+
+// ─── Price chart ─────────────────────────────────────────────────────
+async function loadPriceChart(ticker='AAPL') {
+  const el = document.getElementById('chart-price');
+  try {
+    const data = await fetchJSON(`${API}/market/prices/${ticker}?days=365`);
+    const dates = data.prices.map(p => p.date);
+    const close = data.prices.map(p => p.close);
+    // Add moving averages
+    function sma(arr, n) {
+      return arr.map((_, i) => i < n-1 ? null : arr.slice(i-n+1, i+1).reduce((a,b)=>a+b)/n);
+    }
+    const ma50 = sma(close, 50);
+    const ma200 = sma(close, 200);
+
+    Plotly.newPlot(el, [
+      { x:dates, y:close, type:'scatter', mode:'lines', name:ticker,
+        line:{color:'#58a6ff',width:2} },
+      { x:dates, y:ma50, type:'scatter', mode:'lines', name:'MA 50',
+        line:{color:'#d2991d',width:1,dash:'dash'} },
+      { x:dates, y:ma200, type:'scatter', mode:'lines', name:'MA 200',
+        line:{color:'#a371f7',width:1,dash:'dot'} },
+    ], {
+      paper_bgcolor:'rgba(0,0,0,0)', plot_bgcolor:'rgba(0,0,0,0)',
+      font:{color:'#8b949e',size:11},
+      xaxis:{gridcolor:'#21262d',showgrid:true},
+      yaxis:{gridcolor:'#21262d',showgrid:true,tickprefix:'$'},
+      margin:{l:50,r:30,t:10,b:40},
+      legend:{orientation:'h',y:1.12,x:0,font:{color:'#8b949e'}},
+      hovermode:'x unified',
+    }, {responsive:true,displayModeBar:false});
+  } catch(e) {
+    el.innerHTML = `<div class="loading">Price chart: ${e.message}</div>`;
+  }
+}
+
+// ─── Forecast chart ──────────────────────────────────────────────────
+async function loadForecastChart(ticker='AAPL') {
+  const el = document.getElementById('chart-forecast');
+  try {
+    const r = await fetch(`${API}/predictions/generate/${ticker}?horizon_days=7&save=false`, {method:'POST'});
+    if (!r.ok) { el.innerHTML=`<div class="loading">Forecast: ${r.status}</div>`; return; }
+    const data = await r.json();
+
+    const dates = data.forecasts.map(f => f.target_date);
+    const means = data.forecasts.map(f => f.pred_mean);
+    const uppers = data.forecasts.map(f => f.ci_upper);
+    const lowers = data.forecasts.map(f => f.ci_lower);
+
+    // Historical tail (last 30 days)
+    const hist = await fetchJSON(`${API}/market/prices/${ticker}?days=30`);
+    const histDates = hist.prices.map(p => p.date);
+    const histClose = hist.prices.map(p => p.close);
+
+    Plotly.newPlot(el, [
+      { x:histDates, y:histClose, type:'scatter', mode:'lines', name:'Historical',
+        line:{color:'#58a6ff',width:2} },
+      { x:[...histDates].reverse().slice(0,1).concat(dates),
+        y:[histClose[histClose.length-1], ...means],
+        type:'scatter', mode:'lines+markers', name:'Forecast mean',
+        line:{color:'#3fb950',width:2,dash:'dash'}, marker:{size:6} },
+      { x:dates.concat([...dates].reverse()),
+        y:uppers.concat([...lowers].reverse()),
+        type:'scatter', mode:'none', fill:'toself', name:'90% CI',
+        fillcolor:'rgba(63,185,80,0.12)', line:{width:0}, showlegend:true },
+      { x:dates, y:uppers, type:'scatter', mode:'lines', name:'CI upper',
+        line:{color:'rgba(63,185,80,0.3)',width:1}, showlegend:false },
+      { x:dates, y:lowers, type:'scatter', mode:'lines', name:'CI lower',
+        line:{color:'rgba(63,185,80,0.3)',width:1}, showlegend:false },
+    ], {
+      paper_bgcolor:'rgba(0,0,0,0)', plot_bgcolor:'rgba(0,0,0,0)',
+      font:{color:'#8b949e',size:11},
+      xaxis:{gridcolor:'#21262d',showgrid:true},
+      yaxis:{gridcolor:'#21262d',showgrid:true,tickprefix:'$'},
+      margin:{l:50,r:30,t:10,b:40},
+      legend:{orientation:'h',y:1.12,font:{color:'#8b949e'}},
+      hovermode:'x unified',
+    }, {responsive:true,displayModeBar:false});
+  } catch(e) {
+    el.innerHTML = `<div class="loading">Forecast: ${e.message}</div>`;
+  }
+}
+
+// ─── Scorecard table ─────────────────────────────────────────────────
+async function loadScores() {
+  const el = document.getElementById('scorecard');
+  // Try all tickers
+  const tickers = ['AAPL','MSFT','GOOGL','AMZN','TSLA'];
+  const rows = [];
+  for (const t of tickers) {
+    try {
+      const s = await fetchJSON(`${API}/predictions/model-scores/${t}?days=365`);
+      if (s.scores) {
+        const cov = s.scores.ci_coverage;
+        let cls = 'status-ok';
+        if (cov < 0.75) cls = 'status-bad';
+        else if (cov < 0.83) cls = 'status-warn';
+        rows.push({...s.scores, ticker:t, n:s.n_predictions, cls});
+      }
+    } catch(e) {}
+  }
+  if (!rows.length) {
+    el.innerHTML = `<div class="loading">No scored predictions yet. Run backtest first.</div>`;
+    return;
+  }
+  el.innerHTML = `<table>
+    <thead><tr><th>Ticker</th><th>Preds</th><th>RMSE</th><th>MAE</th><th>CI Cov</th><th>Mean Z</th></tr></thead>
+    <tbody>${rows.map(r=>`<tr onclick="selectTicker('${r.ticker}')" style="cursor:pointer">
+      <td><strong>${r.ticker}</strong></td>
+      <td>${r.n}</td>
+      <td>$${r.rmse.toFixed(2)}</td>
+      <td>$${r.mae.toFixed(2)}</td>
+      <td class="${r.cls}">${(r.ci_coverage*100).toFixed(1)}%</td>
+      <td>${r.mean_z_score.toFixed(2)}</td>
+    </tr>`).join('')}
+    </tbody></table>`;
+}
+
+// ─── Backtest scatter (color-coded under/over) ──────────────────────
+async function loadBacktestChart(ticker='AAPL') {
+  const el = document.getElementById('chart-backtest');
+  try {
+    const data = await fetchJSON(`${API}/predictions/history/${ticker}?days=365`);
+    if (!data.predictions || !data.predictions.length) {
+      el.innerHTML = `<div class="loading">No historical predictions yet</div>`;
+      return;
+    }
+    const scored = data.predictions.filter(p => p.actual_close);
+    if (!scored.length) {
+      el.innerHTML = `<div class="loading">No scored predictions yet. Run backtest.</div>`;
+      return;
+    }
+    const under = scored.filter(p => p.error > 0.001);
+    const over  = scored.filter(p => p.error < -0.001);
+    const exact = scored.filter(p => Math.abs(p.error) <= 0.001);
+
+    const allX = scored.map(p => p.pred_mean);
+    const allY = scored.map(p => p.actual_close);
+    const pad = Math.max(...allX, ...allY) * 0.02;
+    const min = Math.min(...allX, ...allY) - pad;
+    const max = Math.max(...allX, ...allY) + pad;
+
+    const traces = [
+      { x:[min,max], y:[min,max], type:'scatter', mode:'lines', name:'Perfect',
+        line:{color:'#30363d',width:2,dash:'dash'} },
+    ];
+    if (under.length) {
+      traces.push({ x:under.map(p=>p.pred_mean), y:under.map(p=>p.actual_close),
+        type:'scatter', mode:'markers', name:`▲ Under (${under.length})`,
+        marker:{color:'#3fb950',size:7,opacity:0.75} });
+    }
+    if (over.length) {
+      traces.push({ x:over.map(p=>p.pred_mean), y:over.map(p=>p.actual_close),
+        type:'scatter', mode:'markers', name:`▼ Over (${over.length})`,
+        marker:{color:'#f85149',size:7,opacity:0.75} });
+    }
+    if (exact.length) {
+      traces.push({ x:exact.map(p=>p.pred_mean), y:exact.map(p=>p.actual_close),
+        type:'scatter', mode:'markers', name:`● Exact (${exact.length})`,
+        marker:{color:'#d2991d',size:8,opacity:0.9} });
+    }
+
+    Plotly.newPlot(el, traces, {
+      paper_bgcolor:'rgba(0,0,0,0)', plot_bgcolor:'rgba(0,0,0,0)',
+      font:{color:'#8b949e',size:11},
+      xaxis:{title:'Predicted ($)',gridcolor:'#21262d',tickprefix:'$'},
+      yaxis:{title:'Actual ($)',gridcolor:'#21262d',tickprefix:'$'},
+      margin:{l:60,r:30,t:10,b:60},
+      legend:{orientation:'h',y:1.12,font:{color:'#8b949e'}},
+    }, {responsive:true,displayModeBar:false});
+  } catch(e) {
+    el.innerHTML = `<div class="loading">Backtest: ${e.message}</div>`;
+  }
+}
+
+// ─── Bias bar chart ──────────────────────────────────────────────────
+async function loadBiasChart() {
+  const el = document.getElementById('chart-bias');
+  try {
+    const tickers = ['AAPL','MSFT','GOOGL','AMZN','TSLA'];
+    const all = [];
+    for (const t of tickers) {
+      const data = await fetchJSON(`${API}/predictions/history/${t}?days=365`);
+      const scored = data.predictions.filter(p => p.actual_close);
+      const under = scored.filter(p => p.error > 0.001).length;
+      const over  = scored.filter(p => p.error < -0.001).length;
+      const exact = scored.filter(p => Math.abs(p.error) <= 0.001).length;
+      const total = scored.length || 1;
+      all.push({ticker:t, under, over, exact, total,
+        uPct: under/total*100, oPct: over/total*100, ePct: exact/total*100});
+    }
+
+    Plotly.newPlot(el, [
+      { y:all.map(d=>d.ticker), x:all.map(d=>d.uPct), type:'bar', orientation:'h',
+        name:'Under', marker:{color:'#3fb950'}, text:all.map(d=>`${d.under}`),
+        textposition:'inside', insidetextanchor:'start', textfont:{color:'#0d1117',size:11},
+        hovertemplate:'%{y}: %{x:.1f}% under (%{text} preds)<extra></extra>' },
+      { y:all.map(d=>d.ticker), x:all.map(d=>d.oPct), type:'bar', orientation:'h',
+        name:'Over', marker:{color:'#f85149'}, text:all.map(d=>`${d.over}`),
+        textposition:'inside', insidetextanchor:'end', textfont:{color:'#fff',size:11},
+        hovertemplate:'%{y}: %{x:.1f}% over (%{text} preds)<extra></extra>' },
+      { y:all.map(d=>d.ticker), x:all.map(d=>d.ePct), type:'bar', orientation:'h',
+        name:'Exact', marker:{color:'#d2991d'},
+        hovertemplate:'%{y}: %{x:.1f}% exact<extra></extra>' },
+    ], {
+      barmode:'stack',
+      paper_bgcolor:'rgba(0,0,0,0)', plot_bgcolor:'rgba(0,0,0,0)',
+      font:{color:'#8b949e',size:11},
+      xaxis:{title:'% of Predictions',gridcolor:'#21262d',ticksuffix:'%',range:[0,100]},
+      margin:{l:50,r:30,t:10,b:40},
+      legend:{orientation:'h',y:1.12,font:{color:'#8b949e'}},
+    }, {responsive:true,displayModeBar:false});
+  } catch(e) {
+    el.innerHTML = `<div class="loading">Bias chart: ${e.message}</div>`;
+  }
+}
+
+// ─── Bias summary table ──────────────────────────────────────────────
+async function loadBiasSummary() {
+  const el = document.getElementById('bias-summary');
+  try {
+    const tickers = ['AAPL','MSFT','GOOGL','AMZN','TSLA'];
+    const rows = [];
+    let totU=0, totO=0, totE=0, totT=0;
+    for (const t of tickers) {
+      const data = await fetchJSON(`${API}/predictions/history/${t}?days=365`);
+      const scored = data.predictions.filter(p => p.actual_close);
+      const under = scored.filter(p => p.error > 0.001).length;
+      const over  = scored.filter(p => p.error < -0.001).length;
+      const exact = scored.filter(p => Math.abs(p.error) <= 0.001).length;
+      const total = scored.length;
+      totU+=under; totO+=over; totE+=exact; totT+=total;
+      const diff = under - over;
+      let bias = '─ neutral', bcls = 'flat';
+      if (diff >= 3) { bias = '▲ bullish'; bcls = 'up'; }
+      else if (diff <= -3) { bias = '▼ bearish'; bcls = 'down'; }
+      rows.push({ticker:t, under, over, exact, total, diff, bias, bcls});
+    }
+    const totalDiff = totU - totO;
+    let totalBias = '─ balanced', totalCls = 'flat';
+    if (totalDiff >= 8) { totalBias = '▲ bullish tilt'; totalCls = 'up'; }
+    else if (totalDiff <= -8) { totalBias = '▼ bearish tilt'; totalCls = 'down'; }
+
+    el.innerHTML = `<table>
+      <thead><tr><th>Ticker</th><th>Total</th><th>▲ Under</th><th>▼ Over</th><th>● Exact</th><th>Diff</th><th>Bias</th></tr></thead>
+      <tbody>${rows.map(r=>`<tr onclick="selectTicker('${r.ticker}')" style="cursor:pointer">
+        <td><strong>${r.ticker}</strong></td>
+        <td>${r.total}</td>
+        <td style="color:var(--green)">${r.under}</td>
+        <td style="color:var(--red)">${r.over}</td>
+        <td style="color:var(--gold)">${r.exact}</td>
+        <td>${r.diff>0?'+':''}${r.diff}</td>
+        <td class="${r.bcls}">${r.bias}</td>
+      </tr>`).join('')}
+      <tr style="border-top:2px solid var(--border);font-weight:700">
+        <td><strong>TOTAL</strong></td>
+        <td>${totT}</td>
+        <td style="color:var(--green)">${totU} (${(totU/totT*100).toFixed(0)}%)</td>
+        <td style="color:var(--red)">${totO} (${(totO/totT*100).toFixed(0)}%)</td>
+        <td style="color:var(--gold)">${totE}</td>
+        <td>${totalDiff>0?'+':''}${totalDiff}</td>
+        <td class="${totalCls}">${totalBias}</td>
+      </tr>
+      </tbody></table>`;
+  } catch(e) {
+    el.innerHTML = `<div class="loading">Bias summary: ${e.message}</div>`;
+  }
+}
+
+// ─── Risk cards ───────────────────────────────────────────────────────
+async function loadRiskCards(ticker='AAPL') {
+  const el = document.getElementById('risk-cards');
+  try {
+    const r = await fetchJSON(`${API}/risk/${ticker}?lookback_days=252`);
+    const sharpeCls = r.sharpe_ratio >= 0.5 ? 'up' : (r.sharpe_ratio >= 0 ? 'flat' : 'down');
+    const ddCls = r.max_drawdown.pct > -10 ? 'up' : (r.max_drawdown.pct > -20 ? 'flat' : 'down');
+    const beta = r.beta_vs_spy !== null ? r.beta_vs_spy.toFixed(2) : '—';
+    el.innerHTML = [
+      { icon:'⚠️', label:'VaR 95% (1d)', value:r.var_95_1day.dollar_formatted,
+        sub:`${r.var_95_1day.historical_pct}%`, cls:'down' },
+      { icon:'💀', label:'CVaR 95% (1d)', value:r.cvar_95_1day.dollar_formatted,
+        sub:`Expected tail loss`, cls:'down' },
+      { icon:'📈', label:'Sharpe Ratio', value:r.sharpe_ratio.toFixed(2),
+        sub:`Ann. return ${r.returns.annual_return_pct}%`, cls:sharpeCls },
+      { icon:'📉', label:'Max Drawdown', value:`${r.max_drawdown.pct}%`,
+        sub:`${r.max_drawdown.start_date||''} → ${r.max_drawdown.end_date||''}`, cls:ddCls },
+      { icon:'🔗', label:'Beta (vs SPY)', value:beta,
+        sub:`Current DD: ${r.current_drawdown_pct}%`, cls:r.beta_vs_spy!==null&&r.beta_vs_spy<1?'up':'flat' },
+      { icon:'📊', label:'Ann. Volatility', value:`${r.returns.annual_vol_pct}%`,
+        sub:`Range: ${r.volatility_cone.min_annual_pct}%–${r.volatility_cone.max_annual_pct}%`, cls:'flat' },
+      { icon:'🎢', label:'Skewness', value:r.returns.skewness.toFixed(2),
+        sub:`Excess kurtosis: ${r.returns.excess_kurtosis.toFixed(2)}`, cls:r.returns.skewness>0.1?'up':'flat' },
+      { icon:'📏', label:'Observations', value:r.observations,
+        sub:`${r.lookback_days}-day lookback`, cls:'flat' },
+    ].map(c => `<div class="card">
+      <h2>${c.icon} ${c.label}</h2>
+      <div class="price ${c.cls}" style="font-size:1.2rem;margin:4px 0">${c.value}</div>
+      <div class="change" style="font-size:0.75rem;color:var(--muted)">${c.sub}</div>
+    </div>`).join('');
+  } catch(e) {
+    el.innerHTML = `<div class="card" style="grid-column:1/-1"><span style="color:var(--red)">Risk metrics: ${e.message}</span></div>`;
+  }
+}
+
+// ─── Selection ───────────────────────────────────────────────────────
+let selectedTicker = 'AAPL';
+function selectTicker(t) {
+  selectedTicker = t;
+  loadRiskCards(t);
+  loadPriceChart(t);
+  loadForecastChart(t);
+  loadBacktestChart(t);
+  // Highlight card
+  document.querySelectorAll('.ticker-card').forEach(c => {
+    c.style.borderColor = c.querySelector('.symbol')?.textContent?.startsWith(t) ? 'var(--blue)' : 'var(--border)';
+  });
+}
+
+// ─── Init ────────────────────────────────────────────────────────────
+async function loadAll() {
+  document.getElementById('status').textContent = 'Loading…';
+  await loadWatchlist();
+  await loadRiskCards(selectedTicker);
+  await Promise.all([
+    loadPriceChart(selectedTicker),
+    loadForecastChart(selectedTicker),
+    loadScores(),
+    loadBacktestChart(selectedTicker),
+    loadBiasChart(),
+    loadBiasSummary(),
+  ]);
+  document.getElementById('status').innerHTML = '<span style="color:var(--green)">● Live</span>';
+  selectTicker(selectedTicker);
+}
+
+loadAll();
+</script>
+</body>
+</html>
