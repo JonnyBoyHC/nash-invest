@@ -11,6 +11,8 @@ from app.models.market import Asset, PriceData
 from app.models.prediction import ModelVersion, Prediction
 from app.predictors.bayesian import BayesianReturnsPredictor, MODEL_NAME, MODEL_VERSION
 from app.predictors.base import ForecastSet
+from app.predictors.student_t import predict_student_t, compare_models
+from app.predictors.garch import volatility_forecast_ci
 from app.config import settings
 
 router = APIRouter(prefix="/api/predictions", tags=["predictions"])
@@ -232,3 +234,88 @@ def get_model_scores(
             "mean_z_score": round(float(np.mean([p.z_score for p in preds if p.z_score is not None])), 4),
         },
     }
+
+
+@router.post("/generate-student-t/{ticker}")
+def generate_student_t_forecast(
+    ticker: str,
+    horizon_days: int = Query(default=7, ge=1, le=60),
+    samples: int = Query(default=500, ge=100, le=5000),
+    tune: int = Query(default=500, ge=100, le=5000),
+    db: Session = Depends(get_db),
+):
+    """Run Student-T MCMC forecast (fat tails for TSLA-like assets)."""
+    asset = db.query(Asset).filter(Asset.ticker == ticker.upper()).first()
+    if not asset:
+        raise HTTPException(status_code=404, detail=f"{ticker} not tracked")
+
+    prices = (
+        db.query(PriceData)
+        .filter(PriceData.asset_id == asset.id)
+        .order_by(PriceData.date.asc())
+        .all()
+    )
+    if len(prices) < 20:
+        raise HTTPException(status_code=400, detail=f"Need at least 20 prices, got {len(prices)}")
+
+    close_prices = np.array([p.close for p in prices], dtype=float)
+    result = predict_student_t(close_prices, horizon_days=horizon_days, samples=samples, tune=tune)
+    result["ticker"] = ticker.upper()
+
+    return result
+
+
+@router.post("/compare-models/{ticker}")
+def compare_likelihoods(
+    ticker: str,
+    db: Session = Depends(get_db),
+):
+    """Compare Normal vs Student-T likelihood via LOO cross-validation."""
+    asset = db.query(Asset).filter(Asset.ticker == ticker.upper()).first()
+    if not asset:
+        raise HTTPException(status_code=404, detail=f"{ticker} not tracked")
+
+    prices = (
+        db.query(PriceData)
+        .filter(PriceData.asset_id == asset.id)
+        .order_by(PriceData.date.asc())
+        .all()
+    )
+    if len(prices) < 30:
+        raise HTTPException(status_code=400, detail=f"Need at least 30 prices, got {len(prices)}")
+
+    close_prices = np.array([p.close for p in prices], dtype=float)
+    result = compare_models(close_prices)
+    result["ticker"] = ticker.upper()
+
+    return result
+
+
+@router.get("/garch/{ticker}")
+def get_garch_forecast(
+    ticker: str,
+    horizon_days: int = Query(default=7, ge=1, le=60),
+    db: Session = Depends(get_db),
+):
+    """GARCH(1,1) volatility forecast with dynamic CIs."""
+    asset = db.query(Asset).filter(Asset.ticker == ticker.upper()).first()
+    if not asset:
+        raise HTTPException(status_code=404, detail=f"{ticker} not tracked")
+
+    prices = (
+        db.query(PriceData)
+        .filter(PriceData.asset_id == asset.id)
+        .order_by(PriceData.date.asc())
+        .all()
+    )
+    if len(prices) < 30:
+        raise HTTPException(status_code=400, detail=f"Need at least 30 prices, got {len(prices)}")
+
+    close_prices = np.array([p.close for p in prices], dtype=float)
+    returns = np.diff(np.log(close_prices))
+
+    result = volatility_forecast_ci(returns, close_prices, horizon_days=horizon_days)
+    result["ticker"] = ticker.upper()
+    result["current_price"] = round(float(close_prices[-1]), 2)
+
+    return result
