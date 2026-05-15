@@ -110,6 +110,18 @@
     <h2>📊 Bias Summary</h2>
     <div id="bias-summary"></div>
   </div>
+  <div class="card">
+    <h2>📈 RSI (14)</h2>
+    <div id="chart-rsi" style="height:280px"></div>
+  </div>
+  <div class="card">
+    <h2>📉 MACD (12/26/9)</h2>
+    <div id="chart-macd" style="height:280px"></div>
+  </div>
+  <div class="card">
+    <h2>📊 Bollinger Bands (20, 2σ)</h2>
+    <div id="chart-bollinger" style="height:380px"></div>
+  </div>
 </div>
 
 <script>
@@ -444,6 +456,115 @@ async function loadRiskCards(ticker='AAPL') {
   }
 }
 
+// ─── RSI chart ───────────────────────────────────────────────────────
+async function loadRSIChart(ticker='AAPL') {
+  const el = document.getElementById('chart-rsi');
+  try {
+    const data = await fetchJSON(`${API}/indicators/${ticker}/rsi?days=365`);
+    const validIdx = data.values.reduce((a, v, i) => { if (v !== null) a.push(i); return a; }, []);
+    const x = validIdx.map(i => data.dates[i]);
+    const y = validIdx.map(i => data.values[i]);
+
+    Plotly.newPlot(el, [
+      { x, y, type:'scatter', mode:'lines', name:'RSI',
+        line:{color:'#58a6ff',width:2},
+        fill:'tozeroy', fillcolor:'rgba(88,166,255,0.08)' },
+      { x:[x[0], x[x.length-1]], y:[70,70], type:'scatter', mode:'lines',
+        name:'Overbought (70)', line:{color:'#f85149',width:1,dash:'dash'}, showlegend:false },
+      { x:[x[0], x[x.length-1]], y:[30,30], type:'scatter', mode:'lines',
+        name:'Oversold (30)', line:{color:'#3fb950',width:1,dash:'dash'}, showlegend:false },
+    ], {
+      paper_bgcolor:'rgba(0,0,0,0)', plot_bgcolor:'rgba(0,0,0,0)',
+      font:{color:'#8b949e',size:11},
+      xaxis:{gridcolor:'#21262d',showgrid:true},
+      yaxis:{gridcolor:'#21262d',showgrid:true,range:[0,100],tickvals:[0,30,50,70,100]},
+      margin:{l:40,r:20,t:10,b:40},
+      showlegend:false,
+      shapes:[
+        {type:'rect',x0:x[0],x1:x[x.length-1],y0:70,y1:100,fillcolor:'rgba(248,81,73,0.06)',line:{width:0}},
+        {type:'rect',x0:x[0],x1:x[x.length-1],y0:0,y1:30,fillcolor:'rgba(63,185,80,0.06)',line:{width:0}},
+      ],
+    }, {responsive:true,displayModeBar:false});
+  } catch(e) {
+    el.innerHTML = `<div class="loading">RSI: ${e.message}</div>`;
+  }
+}
+
+// ─── MACD chart ──────────────────────────────────────────────────────
+async function loadMACDChart(ticker='AAPL') {
+  const el = document.getElementById('chart-macd');
+  try {
+    const data = await fetchJSON(`${API}/indicators/${ticker}/macd?days=365`);
+    const validIdx = data.macd_line.reduce((a, v, i) => { if (v !== null) a.push(i); return a; }, []);
+    const x = validIdx.map(i => data.dates[i]);
+    const macd = validIdx.map(i => data.macd_line[i]);
+    const sig = validIdx.map(i => data.signal_line[i]);
+    const hist = validIdx.map(i => data.histogram[i]);
+    const colors = hist.map(h => h >= 0 ? '#3fb950' : '#f85149');
+
+    Plotly.newPlot(el, [
+      { x, y:macd, type:'scatter', mode:'lines', name:'MACD',
+        line:{color:'#58a6ff',width:1.5} },
+      { x, y:sig, type:'scatter', mode:'lines', name:'Signal',
+        line:{color:'#d2991d',width:1,dash:'dash'} },
+      { x, y:hist, type:'bar', name:'Histogram',
+        marker:{color:colors}, opacity:0.7 },
+    ], {
+      paper_bgcolor:'rgba(0,0,0,0)', plot_bgcolor:'rgba(0,0,0,0)',
+      font:{color:'#8b949e',size:11},
+      xaxis:{gridcolor:'#21262d',showgrid:true},
+      yaxis:{gridcolor:'#21262d',showgrid:true,title:'MACD'},
+      margin:{l:50,r:20,t:10,b:40},
+      legend:{orientation:'h',y:1.12,font:{color:'#8b949e'}},
+      bargap:0.02,
+    }, {responsive:true,displayModeBar:false});
+  } catch(e) {
+    el.innerHTML = `<div class="loading">MACD: ${e.message}</div>`;
+  }
+}
+
+// ─── Bollinger Bands chart ────────────────────────────────────────────
+async function loadBollingerChart(ticker='AAPL') {
+  const el = document.getElementById('chart-bollinger');
+  try {
+    const data = await fetchJSON(`${API}/indicators/${ticker}/bollinger?days=365`);
+    const validIdx = data.upper.reduce((a, v, i) => { if (v !== null) a.push(i); return a; }, []);
+    const x = validIdx.map(i => data.dates[i]);
+    const upper = validIdx.map(i => data.upper[i]);
+    const middle = validIdx.map(i => data.middle[i]);
+    const lower = validIdx.map(i => data.lower[i]);
+
+    // Get close prices for the same date range
+    const prices = await fetchJSON(`${API}/market/prices/${ticker}?days=365`);
+    const priceDates = prices.prices.map(p => p.date);
+    const closeAll = prices.prices.map(p => p.close);
+
+    Plotly.newPlot(el, [
+      { x:priceDates, y:closeAll, type:'scatter', mode:'lines', name:ticker,
+        line:{color:'#c9d1d9',width:1.5} },
+      { x, y:upper, type:'scatter', mode:'lines', name:'Upper',
+        line:{color:'#f85149',width:1,dash:'dot'}, showlegend:true },
+      { x, y:middle, type:'scatter', mode:'lines', name:'SMA 20',
+        line:{color:'#d2991d',width:1,dash:'dash'} },
+      { x, y:lower, type:'scatter', mode:'lines', name:'Lower',
+        line:{color:'#3fb950',width:1,dash:'dot'}, showlegend:true },
+      { x:x.concat([...x].reverse()),
+        y:upper.concat([...lower].reverse()),
+        type:'scatter', mode:'none', fill:'toself', name:'Band',
+        fillcolor:'rgba(88,166,255,0.06)', line:{width:0} },
+    ], {
+      paper_bgcolor:'rgba(0,0,0,0)', plot_bgcolor:'rgba(0,0,0,0)',
+      font:{color:'#8b949e',size:11},
+      xaxis:{gridcolor:'#21262d',showgrid:true},
+      yaxis:{gridcolor:'#21262d',showgrid:true,tickprefix:'$'},
+      margin:{l:50,r:30,t:10,b:40},
+      legend:{orientation:'h',y:1.12,font:{color:'#8b949e'}},
+    }, {responsive:true,displayModeBar:false});
+  } catch(e) {
+    el.innerHTML = `<div class="loading">Bollinger: ${e.message}</div>`;
+  }
+}
+
 // ─── Selection ───────────────────────────────────────────────────────
 let selectedTicker = 'AAPL';
 function selectTicker(t) {
@@ -452,6 +573,9 @@ function selectTicker(t) {
   loadPriceChart(t);
   loadForecastChart(t);
   loadBacktestChart(t);
+  loadRSIChart(t);
+  loadMACDChart(t);
+  loadBollingerChart(t);
   // Highlight card
   document.querySelectorAll('.ticker-card').forEach(c => {
     c.style.borderColor = c.querySelector('.symbol')?.textContent?.startsWith(t) ? 'var(--blue)' : 'var(--border)';
@@ -470,6 +594,9 @@ async function loadAll() {
     loadBacktestChart(selectedTicker),
     loadBiasChart(),
     loadBiasSummary(),
+    loadRSIChart(selectedTicker),
+    loadMACDChart(selectedTicker),
+    loadBollingerChart(selectedTicker),
   ]);
   document.getElementById('status').innerHTML = '<span style="color:var(--green)">● Live</span>';
   selectTicker(selectedTicker);
