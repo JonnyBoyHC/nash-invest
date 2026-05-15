@@ -122,6 +122,14 @@
     <h2>📊 Bollinger Bands (20, 2σ)</h2>
     <div id="chart-bollinger" style="height:380px"></div>
   </div>
+  <div class="card">
+    <h2>🔥 Correlation Matrix</h2>
+    <div id="chart-correlation" style="height:400px"></div>
+  </div>
+  <div class="card">
+    <h2>🎯 Efficient Frontier</h2>
+    <div id="chart-frontier" style="height:400px"></div>
+  </div>
 </div>
 
 <script>
@@ -565,6 +573,109 @@ async function loadBollingerChart(ticker='AAPL') {
   }
 }
 
+// ─── Correlation heatmap ────────────────────────────────────────────
+async function loadCorrelationChart() {
+  const el = document.getElementById('chart-correlation');
+  try {
+    const data = await fetchJSON(`${API}/portfolio/correlation?days=252`);
+    if (data.error) { el.innerHTML = `<div class="loading">${data.error}</div>`; return; }
+    
+    const labels = data.correlation.labels;
+    const matrix = data.correlation.matrix;
+    
+    // Create annotation text
+    const annotations = [];
+    for (let i = 0; i < labels.length; i++) {
+      for (let j = 0; j < labels.length; j++) {
+        annotations.push({
+          x: labels[j], y: labels[i],
+          text: matrix[i][j].toFixed(2),
+          showarrow: false,
+          font: { color: Math.abs(matrix[i][j]) > 0.5 ? '#0d1117' : '#c9d1d9', size: 12 },
+        });
+      }
+    }
+    
+    Plotly.newPlot(el, [{
+      z: matrix, x: labels, y: labels,
+      type: 'heatmap',
+      colorscale: [
+        [0, '#f85149'], [0.25, '#da3633'], [0.5, '#161b22'],
+        [0.5, '#161b22'], [0.75, '#3fb950'], [1, '#3fb950']
+      ],
+      zmin: -1, zmax: 1,
+      text: matrix.map(row => row.map(v => v.toFixed(2))),
+      texttemplate: '%{text}',
+      textfont: { size: 12 },
+      hoverongaps: false,
+      hovertemplate: '%{y} vs %{x}: %{z:.3f}<extra></extra>',
+    }], {
+      paper_bgcolor:'rgba(0,0,0,0)', plot_bgcolor:'rgba(0,0,0,0)',
+      font:{color:'#8b949e',size:11},
+      xaxis:{side:'top',tickfont:{size:11}},
+      yaxis:{autorange:'reversed',tickfont:{size:11}},
+      margin:{l:60,r:30,t:50,b:20},
+    }, {responsive:true,displayModeBar:false});
+  } catch(e) {
+    el.innerHTML = `<div class="loading">Correlation: ${e.message}</div>`;
+  }
+}
+
+// ─── Efficient frontier ──────────────────────────────────────────────
+async function loadFrontierChart() {
+  const el = document.getElementById('chart-frontier');
+  try {
+    const data = await fetchJSON(`${API}/portfolio/efficient-frontier?days=252&n_portfolios=5000`);
+    if (data.error) { el.innerHTML = `<div class="loading">${data.error}</div>`; return; }
+    
+    const ef = data.efficient_frontier;
+    const opt = data.optimal_portfolios;
+    
+    // Scatter all portfolios (backend returns Pareto-optimal only now, so just the frontier)
+    const traces = [
+      { x: ef.volatility_pct, y: ef.return_pct,
+        type:'scatter', mode:'lines', name:'Efficient Frontier',
+        line:{color:'#58a6ff',width:2},
+        fill:'tozeroy', fillcolor:'rgba(88,166,255,0.04)' },
+    ];
+    
+    // Max Sharpe
+    traces.push({
+      x: [opt.max_sharpe.volatility_pct], y: [opt.max_sharpe.return_pct],
+      type:'scatter', mode:'markers', name:'Max Sharpe',
+      marker:{color:'#d2991d',size:16,symbol:'star'},
+      hovertemplate: `Max Sharpe<br>Return: %{y:.1f}%<br>Vol: %{x:.1f}%<br>Sharpe: ${opt.max_sharpe.sharpe}<extra></extra>`
+    });
+    
+    // Min Vol
+    traces.push({
+      x: [opt.min_volatility.volatility_pct], y: [opt.min_volatility.return_pct],
+      type:'scatter', mode:'markers', name:'Min Vol',
+      marker:{color:'#3fb950',size:14,symbol:'circle'},
+      hovertemplate: `Min Vol<br>Return: %{y:.1f}%<br>Vol: %{x:.1f}%<extra></extra>`
+    });
+    
+    // Equal weight
+    traces.push({
+      x: [opt.equal_weight.volatility_pct], y: [opt.equal_weight.return_pct],
+      type:'scatter', mode:'markers', name:'Equal Weight',
+      marker:{color:'#a371f7',size:12,symbol:'diamond'},
+      hovertemplate: `Equal Weight<br>Return: %{y:.1f}%<br>Vol: %{x:.1f}%<extra></extra>`
+    });
+    
+    Plotly.newPlot(el, traces, {
+      paper_bgcolor:'rgba(0,0,0,0)', plot_bgcolor:'rgba(0,0,0,0)',
+      font:{color:'#8b949e',size:11},
+      xaxis:{title:'Annualized Volatility (%)',gridcolor:'#21262d',ticksuffix:'%'},
+      yaxis:{title:'Annualized Return (%)',gridcolor:'#21262d',ticksuffix:'%'},
+      margin:{l:60,r:30,t:10,b:50},
+      legend:{orientation:'h',y:1.12,font:{color:'#8b949e'}},
+    }, {responsive:true,displayModeBar:false});
+  } catch(e) {
+    el.innerHTML = `<div class="loading">Frontier: ${e.message}</div>`;
+  }
+}
+
 // ─── Selection ───────────────────────────────────────────────────────
 let selectedTicker = 'AAPL';
 function selectTicker(t) {
@@ -597,6 +708,8 @@ async function loadAll() {
     loadRSIChart(selectedTicker),
     loadMACDChart(selectedTicker),
     loadBollingerChart(selectedTicker),
+    loadCorrelationChart(),
+    loadFrontierChart(),
   ]);
   document.getElementById('status').innerHTML = '<span style="color:var(--green)">● Live</span>';
   selectTicker(selectedTicker);

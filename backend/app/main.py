@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse
 from app.config import settings
 from app.database import init_db
 from app.pipelines.data_fetcher import sync_watchlist
-from app.routers import market, predictions, risk, indicators
+from app.routers import market, predictions, risk, indicators, portfolio
 
 logging.basicConfig(
     level=logging.INFO,
@@ -54,6 +54,7 @@ app.include_router(market.router)
 app.include_router(predictions.router)
 app.include_router(risk.router)
 app.include_router(indicators.router)
+app.include_router(portfolio.router)
 
 # Static dashboard
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -79,6 +80,7 @@ def root():
         "predictions": "/api/predictions",
         "risk": "/api/risk",
         "indicators": "/api/indicators",
+        "portfolio": "/api/portfolio",
     }
 
 
